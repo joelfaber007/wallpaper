@@ -1,11 +1,19 @@
 // Step the point into an adjacent tile of wallpaper group p1 (orbifold o).
 //
 // p1 is the group of an oblique lattice and nothing else: no rotation, no
-// mirror, no glide. Its only steps are the translations to the four
+// mirror, no glide. Its only steps are the translations to the six
 // neighbouring tiles.
 //
-//   a1      the first lattice vector, along the x axis
-//   a2      the second, at angle gamma to the first
+//   a1      the shortest lattice vector
+//   a2      the shortest vector independent of it, at 90 degrees or more
+//           to a1, so that a1 + a2 is the shorter diagonal of the cell
+//
+// a1 and a2 alone generate the group; a1 + a2 is there so the walk can
+// spread evenly. Two directions can only be balanced against each other,
+// and on a lattice whose vectors are not perpendicular that leaves the
+// spread an ellipse. With the third the shares can be set to make it round
+// on every lattice: the six steps are the hexagonal neighbours of a
+// hexagonal lattice, and on a rectangular one the diagonal gets no share.
 //
 // Both directions of each translation are offered so the walk is
 // reversible. A single direction generates the group just as well, but a
@@ -28,7 +36,7 @@
 // it is tall would otherwise spread the walk further along one axis than the
 // other and render as a band, so each move's share is set on the host to make
 // the spread equal in every direction. The shares reach the kernel already
-// accumulated, in cw0..cw2, and one uniform value picks a move by counting
+// accumulated, in cw0..cw4, and one uniform value picks a move by counting
 // how many of them it reaches -- still one path for every work item.
 
 #define WP_P1_STRIDE 5
@@ -39,6 +47,8 @@ __constant PyroReal wp_p1_moves[] = {
     1.0, 0.0, 1.0, -1.0,  0.0,   // translation by -a1
     1.0, 0.0, 1.0,  0.0,  1.0,   // translation by +a2
     1.0, 0.0, 1.0,  0.0, -1.0,   // translation by -a2
+    1.0, 0.0, 1.0,  1.0,  1.0,   // translation by +(a1 + a2)
+    1.0, 0.0, 1.0, -1.0, -1.0,   // translation by -(a1 + a2)
 };
 
 PYRO_FUNCTION wallpaper_p1(
@@ -48,12 +58,14 @@ PYRO_FUNCTION wallpaper_p1(
     PyroReal cw0,
     PyroReal cw1,
     PyroReal cw2,
+    PyroReal cw3,
+    PyroReal cw4,
     __global PyroRNG* random_state)
 {
     int i = get_global_id(0);
     PyroReal u = rng_float(random_state[i]);
     int m = WP_P1_STRIDE * (
-        (u >= cw0) + (u >= cw1) + (u >= cw2));
+        (u >= cw0) + (u >= cw1) + (u >= cw2) + (u >= cw3) + (u >= cw4));
 
     PyroReal px = zin[i].x;
     PyroReal py = wp_p1_moves[m + 2] * zin[i].y;

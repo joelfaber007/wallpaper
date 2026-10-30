@@ -21,12 +21,16 @@ MOVES: dict[str, tuple[tuple[float, float, float, float, float], ...]] = {
         (1.0, 0.0, 1.0, -1.0,  0.0),  # translation by -a1
         (1.0, 0.0, 1.0,  0.0,  1.0),  # translation by +a2
         (1.0, 0.0, 1.0,  0.0, -1.0),  # translation by -a2
+        (1.0, 0.0, 1.0,  1.0,  1.0),  # translation by +(a1 + a2)
+        (1.0, 0.0, 1.0, -1.0, -1.0),  # translation by -(a1 + a2)
     ),
     "p2": (
         ( 1.0, 0.0, 1.0,  1.0,  0.0),  # translation by +a1
         ( 1.0, 0.0, 1.0, -1.0,  0.0),  # translation by -a1
         ( 1.0, 0.0, 1.0,  0.0,  1.0),  # translation by +a2
         ( 1.0, 0.0, 1.0,  0.0, -1.0),  # translation by -a2
+        ( 1.0, 0.0, 1.0,  1.0,  1.0),  # translation by +(a1 + a2)
+        ( 1.0, 0.0, 1.0, -1.0, -1.0),  # translation by -(a1 + a2)
         (-1.0, 0.0, 1.0,  0.0,  0.0),  # half turn about the origin
         (-1.0, 0.0, 1.0,  1.0,  0.0),  # half turn about the midpoint of a1
     ),

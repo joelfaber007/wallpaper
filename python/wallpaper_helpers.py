@@ -235,31 +235,86 @@ def _lopsided(m: numpy.ndarray) -> complex:
     return complex(m[0, 0] - m[1, 1], 2.0 * m[0, 1])
 
 
-def _balance_axis(ax: complex, by: complex, vectors: bool) -> complex:
-    """The direction a walk is balanced along, as the lopsided value that
-    counts as leaning one way; its opposite counts as leaning the other.
+def _round_translations(
+    t: numpy.ndarray, prior: numpy.ndarray, identity: numpy.ndarray
+) -> numpy.ndarray:
+    """The prior, with its share of plain translations split so that the
+    translations alone spread the walk round.
 
-    The groups that take two axis lengths are balanced along x against y,
-    which is 1. Every one of them has a mirror, a glide or a turn among its
-    linear parts that cancels the walk's xy spread, so a walk that spreads as
-    far along x as along y is round.
+    A translation by t adds t**2 to the walk's lopsided part, so a split whose
+    t**2 sum to zero is round. The translations of p1 and p2 lie along a1, a2
+    and a1 + a2, which the lattice reduction leaves meeting pairwise at 90
+    degrees or more. For three such directions the split is unique and never
+    negative -- each direction's share is minus the dot product of the other
+    two -- so it is solved for rather than searched. A rectangular lattice
+    gives its diagonal no share at all: a1 and a2 are round on their own, and
+    generate the lattice without it.
 
-    An oblique lattice has no preferred axes, so its direction must turn with
-    the lattice. Every translation in p1 and p2 is a multiple of a1 or a2,
-    and their only turn is a half turn, which cancels nothing; the walk's
-    lopsided part, as a share of its spread, therefore lies on the segment
-    between u1 = a1**2/|a1|**2 and u2, and the point of that segment nearest
-    zero is its midpoint, since both are unit length. So the most even walk
-    two directions allow spreads as far along a1 as along a2, and that is
-    measured along u1 - u2. Turning the lattice turns u1 - u2 with it, so the
-    weights depend on the lattice's shape and not on how it sits in the
-    plane. A degenerate lattice, whose two directions coincide, gives zero:
-    there is nothing to balance, and every move is left to the prior."""
+    A move and its inverse have the same t**2, so the least-norm solution
+    gives them equal shares and the walk does not drift.
+    """
 
-    if not vectors:
-        return 1.0 + 0.0j
+    step = (t[identity, 0] + 1j * t[identity, 1]) ** 2
+    if len(step) == 0:
+        return prior.copy()
 
-    return ax**2 / abs(ax) ** 2 - by**2 / abs(by) ** 2
+    system = numpy.array([step.real, step.imag, numpy.ones(len(step))])
+    split = numpy.linalg.lstsq(system, [0.0, 0.0, 1.0], rcond=None)[0]
+
+    # Only rounding takes a share below zero on a reduced lattice; a
+    # degenerate one, which has no round split, keeps the prior's.
+    split = numpy.clip(split, 0.0, None)
+    if split.sum() <= 0.0:
+        return prior.copy()
+
+    rounded = prior.copy()
+    rounded[identity] = prior[identity].sum() * split / split.sum()
+
+    return rounded
+
+
+def _solve_plane(
+    d: numpy.ndarray,
+    imbalance: Callable[[numpy.ndarray], complex],
+    prior: numpy.ndarray,
+) -> numpy.ndarray:
+    """As `_solve`, for a walk whose lean has two parts to bring to zero
+    rather than one.
+
+    `d` and `imbalance` are complex, the lean as `_lopsided` gives it, and the
+    weights are taken from the family `w ∝ prior*exp(-Re(conj(lam)*d))` for
+    one complex `lam`. A move the prior never draws is never drawn by any
+    member of the family either.
+
+    Where no weighting in the family is round, the one nearest to round comes
+    back: the walk is then as even as it can be made without dropping a move
+    the prior draws.
+    """
+
+    if abs(imbalance(prior)) <= 1e-12:
+        return prior.copy()
+
+    # Scaled so lam is of order one whatever the size of the cell.
+    scale = numpy.abs(d).max()
+    if scale == 0.0:
+        return prior.copy()
+    d = d / scale
+
+    def tilted(lam: complex) -> numpy.ndarray:
+        # Shifted before exponentiating so a large lam cannot overflow.
+        x = -(lam.conjugate() * d).real
+        e = prior * numpy.exp(x - x.max())
+        return e / e.sum()
+
+    def lean(x: numpy.ndarray) -> list[float]:
+        z = imbalance(tilted(complex(x[0], x[1])))
+        return [z.real, z.imag]
+
+    found = scipy.optimize.least_squares(
+        lean, [0.0, 0.0], xtol=1e-15, ftol=1e-15, gtol=1e-15
+    )
+
+    return tilted(complex(found.x[0], found.x[1]))
 
 
 @functools.lru_cache(maxsize=256)
@@ -269,16 +324,34 @@ def _weights(
     rows = _moves(group)
     t = _offsets(rows, ax, by, vectors)
     points = _point_group(group)
-    axis = _balance_axis(complex(ax), complex(by), vectors).conjugate()
-
-    def imbalance(w: numpy.ndarray) -> float:
-        spread = _growth(rows, t, w, points)
-        return (_lopsided(spread) * axis).real / numpy.trace(spread)
+    prior = _prior(rows, symmetry)
 
     # Each move's part in the lean when counted by its translation alone.
-    alone = ((t[:, 0] + 1j * t[:, 1]) ** 2 * axis).real
+    alone = (t[:, 0] + 1j * t[:, 1]) ** 2
 
-    return tuple(_solve(alone, imbalance, _prior(rows, symmetry)))
+    # An oblique lattice has no preferred axes, and the only turn p1 and p2
+    # have is a half turn, which cancels nothing: the lean has a part along
+    # every direction, and both parts are brought to zero. The translations
+    # are split to be round on their own first, so p1 needs no correction at
+    # all and p2 needs one only for what its half turns add.
+    if vectors:
+        def lean(w: numpy.ndarray) -> complex:
+            spread = _growth(rows, t, w, points)
+            return _lopsided(spread) / numpy.trace(spread)
+
+        prior = _round_translations(t, prior, _identity(rows))
+
+        return tuple(_solve_plane(alone, lean, prior))
+
+    # The groups that take two axis lengths are balanced along x against y.
+    # Every one of them has a mirror, a glide or a turn among its linear parts
+    # that cancels the walk's xy spread, so a walk that spreads as far along x
+    # as along y is round.
+    def imbalance(w: numpy.ndarray) -> float:
+        spread = _growth(rows, t, w, points)
+        return _lopsided(spread).real / numpy.trace(spread)
+
+    return tuple(_solve(alone.real, imbalance, prior))
 
 
 def weights(

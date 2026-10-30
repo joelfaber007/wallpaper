@@ -10,7 +10,8 @@ import numpy
 @functools.lru_cache(maxsize=64)
 def _reduce(a: float, b: float, gamma: float) -> tuple[complex, complex]:
     """The two shortest vectors that generate the same lattice as
-    (a, 0) and b*(cos(gamma), sin(gamma)).
+    (a, 0) and b*(cos(gamma), sin(gamma)), at an angle of at least 90
+    degrees to each other.
 
     Lagrange-Gauss reduction: repeatedly subtract whole multiples of the
     shorter vector from the longer one. Every step subtracts a lattice
@@ -18,12 +19,17 @@ def _reduce(a: float, b: float, gamma: float) -> tuple[complex, complex]:
     basis naming it does.
 
     The basis matters because a chaos game on a wallpaper group is a random
-    walk, and its steps are the basis vectors. The walk spreads along a
-    direction as the square root of the variance of its steps in that
+    walk, and its steps are the basis vectors and their sum. The walk spreads
+    along a direction as the square root of the variance of its steps in that
     direction, so a skewed basis spreads the render into a band even though
     the lattice it names is perfectly reasonable. A reduced basis has its
-    two vectors as short and as near perpendicular as the lattice allows,
-    which is the most even walk two vectors can give.
+    two vectors as short and as near perpendicular as the lattice allows.
+
+    The angle is what makes v1 + v2 the shorter diagonal of the cell rather
+    than the longer one. The three vectors v1, v2 and -(v1 + v2) then meet
+    pairwise at 90 degrees or more -- an obtuse superbase -- and weighting
+    each by minus the dot product of the other two spreads the walk evenly
+    in every direction, whatever the lattice.
     """
 
     v1 = numpy.array([a, 0.0])
@@ -46,6 +52,10 @@ def _reduce(a: float, b: float, gamma: float) -> tuple[complex, complex]:
 
         v2 = v2 - mu * v1
 
+    # -v2 generates the same lattice as v2, so the sign is free to choose.
+    if v1 @ v2 > 0.0:
+        v2 = -v2
+
     return complex(*v1), complex(*v2)
 
 
@@ -58,12 +68,14 @@ def reduced(a: float, b: float, gamma: float, index: int) -> complex:
 
 def anisotropy(a: float, b: float, gamma: float) -> float:
     """How much further the walk spreads along its widest direction than
-    its narrowest, using the reduced basis. 1.0 is a perfectly round
-    spread; larger values render as a band."""
+    its narrowest, when it steps along the reduced basis and its sum with
+    equal probability. 1.0 is a perfectly round spread; larger values
+    render as a band."""
 
     v1, v2 = _reduce(float(a), float(b), float(gamma))
-    step = numpy.array([[v1.real, v1.imag], [v2.real, v2.imag]])
-    covariance = 0.5 * (step.T @ step)
+    v3 = v1 + v2
+    step = numpy.array([[v.real, v.imag] for v in (v1, v2, v3)])
+    covariance = (step.T @ step) / 3.0
     eigenvalues = numpy.linalg.eigvalsh(covariance)
 
     return float(numpy.sqrt(eigenvalues[1] / max(eigenvalues[0], 1e-300)))

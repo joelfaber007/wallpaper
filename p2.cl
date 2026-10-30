@@ -5,8 +5,15 @@
 // the centres of the tiles - four classes in all, which is what the orbifold
 // name 2222 counts.
 //
-//   a1      the first lattice vector, along the x axis
-//   a2      the second, at angle gamma to the first
+//   a1      the shortest lattice vector
+//   a2      the shortest vector independent of it, at 90 degrees or more
+//           to a1, so that a1 + a2 is the shorter diagonal of the cell
+//
+// a1 and a2 alone generate the translations; a1 + a2 is there so the walk
+// can spread evenly. Two directions can only be balanced against each
+// other, and on a lattice whose vectors are not perpendicular that leaves
+// the spread an ellipse. With the third the shares can be set to make it
+// round on every lattice.
 //
 // A half turn is its own inverse, so the two rotations need no backwards
 // variant; the translations are offered in both directions so the walk does
@@ -28,7 +35,7 @@
 // it is tall would otherwise spread the walk further along one axis than the
 // other and render as a band, so each move's share is set on the host to make
 // the spread equal in every direction. The shares reach the kernel already
-// accumulated, in cw0..cw4, and one uniform value picks a move by counting
+// accumulated, in cw0..cw6, and one uniform value picks a move by counting
 // how many of them it reaches -- still one path for every work item.
 
 #define WP_P2_STRIDE 5
@@ -39,6 +46,8 @@ __constant PyroReal wp_p2_moves[] = {
      1.0, 0.0, 1.0, -1.0,  0.0,   // translation by -a1
      1.0, 0.0, 1.0,  0.0,  1.0,   // translation by +a2
      1.0, 0.0, 1.0,  0.0, -1.0,   // translation by -a2
+     1.0, 0.0, 1.0,  1.0,  1.0,   // translation by +(a1 + a2)
+     1.0, 0.0, 1.0, -1.0, -1.0,   // translation by -(a1 + a2)
     -1.0, 0.0, 1.0,  0.0,  0.0,   // half turn about the origin
     -1.0, 0.0, 1.0,  1.0,  0.0,   // half turn about the midpoint of a1
 };
@@ -52,12 +61,15 @@ PYRO_FUNCTION wallpaper_p2(
     PyroReal cw2,
     PyroReal cw3,
     PyroReal cw4,
+    PyroReal cw5,
+    PyroReal cw6,
     __global PyroRNG* random_state)
 {
     int i = get_global_id(0);
     PyroReal u = rng_float(random_state[i]);
     int m = WP_P2_STRIDE * (
-        (u >= cw0) + (u >= cw1) + (u >= cw2) + (u >= cw3) + (u >= cw4));
+        (u >= cw0) + (u >= cw1) + (u >= cw2) + (u >= cw3) + (u >= cw4)
+        + (u >= cw5) + (u >= cw6));
 
     PyroReal px = zin[i].x;
     PyroReal py = wp_p2_moves[m + 2] * zin[i].y;
