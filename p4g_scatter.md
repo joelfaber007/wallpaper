@@ -37,5 +37,6 @@ After one call every copy within `reach` is as likely as every other, which is w
 - `p4g` steps the point into a neighbouring tile at random, so iterating walks it over the tiling.
 - `p4g_fold` folds every point into one copy of the fundamental domain.
 - `p4g_region` routes the point by which of the group's special positions it lies on.
+- `p4g_cairo_fold` folds every point into one tile of a Cairo pentagonal tiling, which the scatter then repeats.
 
 Give every plugin of the group the same lattice parameters, or their tiles, domains and special positions will not line up.

@@ -1,5 +1,6 @@
 // The fundamental domain of wallpaper group cm (orbifold *x): fold a point
-// into one copy of it and scatter a point to a random copy.
+// into one copy of it, scatter a point to a random copy, and carry a point
+// into it and back out to where it came from.
 //
 // One cell of the lattice holds two copies of it. The domain is the Dirichlet
 // domain of a seed point: everything nearer the seed than any other image of
@@ -29,7 +30,8 @@
 #define WP_COPY_STRIDE 5
 
 // Which copy of the fundamental domain holds z, with z carried back into the
-// domain itself through `folded`.
+// domain itself through `folded`, and the lattice translation from that
+// copy's place in the table to where it holds z through `shift`.
 //
 // The domain is everything nearer the seed than any other image of it, so the
 // copy holding z is the one whose image of the seed lies nearest. Every image
@@ -52,12 +54,15 @@ int wp_copy_find(
     PyroXY near1,
     PyroXY inv0,
     PyroXY inv1,
-    PyroXY* folded)
+    PyroXY* folded,
+    PyroXY* shift)
 {
     int found = 0;
     PyroReal best = INFINITY;
     PyroReal wx = 0.0;
     PyroReal wy = 0.0;
+    PyroReal tx = 0.0;
+    PyroReal ty = 0.0;
 
     for (int k = 0; k < count; ++k) {
         __constant PyroReal* row = copies + WP_COPY_STRIDE * k;
@@ -70,8 +75,10 @@ int wp_copy_find(
         for (int corner = 0; corner < 4; ++corner) {
             PyroReal cu = u + (PyroReal)(corner & 1);
             PyroReal cv = v + (PyroReal)(corner >> 1);
-            PyroReal ex = dx - (near0.x * cu + near1.x * cv);
-            PyroReal ey = dy - (near0.y * cu + near1.y * cv);
+            PyroReal sx = near0.x * cu + near1.x * cv;
+            PyroReal sy = near0.y * cu + near1.y * cv;
+            PyroReal ex = dx - sx;
+            PyroReal ey = dy - sy;
             PyroReal far = ex * ex + ey * ey;
 
             if (far < best) {
@@ -79,6 +86,8 @@ int wp_copy_find(
                 found = k;
                 wx = ex;
                 wy = ey;
+                tx = sx;
+                ty = sy;
             }
         }
     }
@@ -93,18 +102,48 @@ int wp_copy_find(
     folded->y = cell0.y * copies[0] + cell1.y * copies[1]
               + f * (c * wy - s * wx);
 
+    shift->x = tx;
+    shift->y = ty;
+
     return found;
+}
+
+// z carried by the isometry of the group that takes the domain onto copy k,
+// and then by the lattice translation `shift`.
+//
+// The isometry is the copy's turn applied about the seed: the step from the
+// seed is flipped by f, turned by c + i*s, and set down at the copy's image of
+// the seed. It undoes wp_copy_find: a point that folded to `folded` with copy
+// k and `shift` is carried by them back to where it was.
+PyroXY wp_copy_carry(
+    PyroXY z,
+    __constant PyroReal* copies,
+    int k,
+    PyroXY cell0,
+    PyroXY cell1,
+    PyroXY shift)
+{
+    __constant PyroReal* row = copies + WP_COPY_STRIDE * k;
+    PyroReal c = row[2];
+    PyroReal s = row[3];
+
+    PyroReal wx = z.x - (cell0.x * copies[0] + cell1.x * copies[1]);
+    PyroReal wy = row[4] * (z.y - (cell0.y * copies[0] + cell1.y * copies[1]));
+
+    PyroXY out;
+    out.x = c * wx - s * wy + cell0.x * row[0] + cell1.x * row[1] + shift.x;
+    out.y = s * wx + c * wy + cell0.y * row[0] + cell1.y * row[1] + shift.y;
+
+    return out;
 }
 
 // z carried by the isometry of the group that takes the domain onto copy k,
 // and then by the lattice translation to the cell that holds the point
 // (tx, ty).
 //
-// The isometry is the copy's turn applied about the seed: the step from the
-// seed is flipped by f, turned by c + i*s, and set down at the copy's image of
-// the seed. The cell is found by rounding (tx, ty) in the coordinates of the
-// reduced basis, which gives every cell an equal share of the plane, so a
-// (tx, ty) spread evenly over a region picks the cells in it evenly.
+// The cell is found by rounding (tx, ty) in the coordinates of the reduced
+// basis, which gives every cell an equal share of the plane, so a (tx, ty)
+// spread evenly over a region picks the cells in it evenly.
 PyroXY wp_copy_scatter(
     PyroXY z,
     __constant PyroReal* copies,
@@ -118,23 +157,49 @@ PyroXY wp_copy_scatter(
     PyroReal tx,
     PyroReal ty)
 {
-    __constant PyroReal* row = copies + WP_COPY_STRIDE * k;
-    PyroReal c = row[2];
-    PyroReal s = row[3];
-
-    PyroReal wx = z.x - (cell0.x * copies[0] + cell1.x * copies[1]);
-    PyroReal wy = row[4] * (z.y - (cell0.y * copies[0] + cell1.y * copies[1]));
-
     PyroReal m = round(inv0.x * tx + inv0.y * ty);
     PyroReal n = round(inv1.x * tx + inv1.y * ty);
 
-    PyroXY out;
-    out.x = c * wx - s * wy + cell0.x * row[0] + cell1.x * row[1]
-          + near0.x * m + near1.x * n;
-    out.y = s * wx + c * wy + cell0.y * row[0] + cell1.y * row[1]
-          + near0.y * m + near1.y * n;
+    PyroXY shift;
+    shift.x = near0.x * m + near1.x * n;
+    shift.y = near0.y * m + near1.y * n;
 
-    return out;
+    return wp_copy_carry(z, copies, k, cell0, cell1, shift);
+}
+
+// The tile wp_copy_find took a point from, kept in `tile` for the exit
+// function to carry the point back to: the copy, whether that copy is the
+// domain flipped over, and the lattice translation as whole steps (m, n) of
+// cell0 and cell1. The rows cinv0 and cinv1 are the inverse of that basis.
+void wp_tile_store(
+    __global WallpaperTile* tile,
+    __constant PyroReal* copies,
+    int k,
+    PyroXY shift,
+    PyroXY cinv0,
+    PyroXY cinv1)
+{
+    tile->copy = k;
+    tile->flip = (int)copies[WP_COPY_STRIDE * k + 4];
+    tile->m = (int)round(cinv0.x * shift.x + cinv0.y * shift.y);
+    tile->n = (int)round(cinv1.x * shift.x + cinv1.y * shift.y);
+}
+
+// The copy `tile` holds, kept within the `count` copies of the group reading
+// it, since the tile may have been stored by another group's enter function.
+int wp_tile_copy(__global WallpaperTile* tile, int count)
+{
+    return clamp(tile->copy, 0, count - 1);
+}
+
+// The lattice translation `tile` holds, in the plane.
+PyroXY wp_tile_shift(__global WallpaperTile* tile, PyroXY cell0, PyroXY cell1)
+{
+    PyroXY shift;
+    shift.x = cell0.x * tile->m + cell1.x * tile->n;
+    shift.y = cell0.y * tile->m + cell1.y * tile->n;
+
+    return shift;
 }
 
 #endif
@@ -158,9 +223,10 @@ PYRO_FUNCTION wallpaper_cm_fold(
 {
     int i = get_global_id(0);
     PyroXY folded;
+    PyroXY shift;
 
     wp_copy_find(zin[i], wp_cm_copies, WP_CM_COPIES,
-                 cell0, cell1, near0, near1, inv0, inv1, &folded);
+                 cell0, cell1, near0, near1, inv0, inv1, &folded, &shift);
 
     zin[i] = folded;
 }
@@ -187,4 +253,57 @@ PYRO_FUNCTION wallpaper_cm_scatter(
     zin[i] = wp_copy_scatter(zin[i], wp_cm_copies, k,
                              cell0, cell1, near0, near1, inv0, inv1,
                              r * cos(t), r * sin(t));
+}
+
+// Fold the point into the fundamental domain exactly as the fold does, and
+// keep in `tile` which copy of the domain, in which cell, it was taken from.
+PYRO_FUNCTION wallpaper_cm_enter(
+    __global PyroXY* zin,
+    __global WallpaperTile* tile,
+    PyroXY cell0,
+    PyroXY cell1,
+    PyroXY near0,
+    PyroXY near1,
+    PyroXY inv0,
+    PyroXY inv1,
+    PyroXY cinv0,
+    PyroXY cinv1)
+{
+    int i = get_global_id(0);
+    PyroXY folded;
+    PyroXY shift;
+
+    int k = wp_copy_find(zin[i], wp_cm_copies, WP_CM_COPIES,
+                         cell0, cell1, near0, near1, inv0, inv1,
+                         &folded, &shift);
+
+    zin[i] = folded;
+    wp_tile_store(&tile[i], wp_cm_copies, k, shift, cinv0, cinv1);
+}
+
+// Carry the point out of the fundamental domain to the copy and cell `tile`
+// holds, which undoes the enter function that stored them.
+PYRO_FUNCTION wallpaper_cm_exit(
+    __global PyroXY* zin,
+    __global WallpaperTile* tile,
+    PyroXY cell0,
+    PyroXY cell1)
+{
+    int i = get_global_id(0);
+    int k = wp_tile_copy(&tile[i], WP_CM_COPIES);
+
+    zin[i] = wp_copy_carry(zin[i], wp_cm_copies, k, cell0, cell1,
+                           wp_tile_shift(&tile[i], cell0, cell1));
+}
+
+// Branch on which copy of the fundamental domain the tile an enter function
+// took the point from is. The outputs list the copies in the order of the
+// table, so the copy's row is the output taken.
+PYRO_FUNCTION wallpaper_cm_tile_copy(
+    __global WallpaperTile* tile,
+    __global ActiveOutputIDs* active_output_ids)
+{
+    int i = get_global_id(0);
+
+    active_output_ids[i] = wp_tile_copy(&tile[i], WP_CM_COPIES);
 }
